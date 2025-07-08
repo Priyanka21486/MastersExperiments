@@ -1,0 +1,116 @@
+import os
+import numpy as np
+import librosa
+import tensorflow as tf
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.utils import class_weight
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+
+def extract_mfcc_features(audio_path, n_mfcc=13, max_length=None):
+    """Extract MFCC features from an audio file."""
+    y, sr = librosa.load(audio_path, sr=None)
+    mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc)
+    
+    if max_length:
+        # Pad or truncate to ensure uniform length
+        if mfccs.shape[1] > max_length:
+            mfccs = mfccs[:, :max_length]
+        elif mfccs.shape[1] < max_length:
+            pad_width = max_length - mfccs.shape[1]
+            mfccs = np.pad(mfccs, ((0, 0), (0, pad_width)), mode='constant')
+    
+    return mfccs.T  # Transpose for CNN input format (time steps x features)
+
+def load_data_from_folders(folder1, folder2):
+    """Load MFCC features and labels from two folders."""
+    features = []
+    labels = []
+    
+    # Process folder1
+    for filename in os.listdir(folder1):
+        if filename.lower().endswith(('.wav', '.mp3')):
+            file_path = os.path.join(folder1, filename)
+            mfccs = extract_mfcc_features(file_path)
+            features.append(mfccs)
+            labels.append(0)  # Label for folder1
+    
+    # Process folder2
+    for filename in os.listdir(folder2):
+        if filename.lower().endswith(('.wav', '.mp3')):
+            file_path = os.path.join(folder2, filename)
+            mfccs = extract_mfcc_features(file_path)
+            features.append(mfccs)
+            labels.append(1)  # Label for folder2
+    
+    return np.array(features), np.array(labels)
+
+def build_tdnn_model(input_shape):
+    """Build a TDNN model with temporal convolutions."""
+    model = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=input_shape),
+        tf.keras.layers.Conv1D(filters=64, kernel_size=5, activation='relu', padding='same'),
+        tf.keras.layers.MaxPooling1D(pool_size=2, padding='same'),
+        tf.keras.layers.Conv1D(filters=128, kernel_size=5, activation='relu', padding='same'),
+        tf.keras.layers.MaxPooling1D(pool_size=2, padding='same'),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.Dense(1, activation='sigmoid')
+    ])
+    
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    return model
+
+def train_and_evaluate_model(X_train, y_train, X_test, y_test):
+    """Train and evaluate a TDNN model."""
+    # Pad sequences to ensure consistent input size
+    max_len = max([x.shape[0] for x in X_train])
+    X_train_padded = tf.keras.preprocessing.sequence.pad_sequences(X_train, maxlen=max_len, padding='post', dtype='float32')
+    X_test_padded = tf.keras.preprocessing.sequence.pad_sequences(X_test, maxlen=max_len, padding='post', dtype='float32')
+    
+    # Build the model
+    model = build_tdnn_model((X_train_padded.shape[1], X_train_padded.shape[2]))
+    
+    # Fit the model
+    class_weights = class_weight.compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+    class_weights_dict = dict(enumerate(class_weights))
+    
+    history = model.fit(X_train_padded, y_train, 
+                        validation_data=(X_test_padded, y_test),
+                        epochs=10, 
+                        batch_size=32, 
+                        class_weight=class_weights_dict)
+    
+    # Evaluate the model
+    test_loss, test_accuracy = model.evaluate(X_test_padded, y_test)
+    print(f"Test Accuracy: {test_accuracy:.2f}")
+    print(f"Test Loss: {test_loss:.2f}")
+    y_pred_prob = model.predict(X_test_padded)
+    y_pred = (y_pred_prob > 0.5).astype(int).flatten()
+
+    #y_pred = np.argmax(y_pred_prob, axis=1)
+    print(y_pred)
+
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f"Accuracy: {accuracy:.2f}")
+    precision = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    print(f'Precision: {precision:.2f}')
+    print(f'Recall: {recall:.2f}')
+    print(f'F1 Score: {f1:.2f}')
+
+
+# Example usage
+folder_class1 = '/home/spl_cair/Desktop/priyanka/icassp_exp/TISA_INT'
+folder_class2 = '/home/spl_cair/Desktop/priyanka/icassp_exp/IED_INT'
+
+# Load data
+features, labels = load_data_from_folders(folder_class1, folder_class2)
+
+# Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.3, random_state=42, shuffle=True)
+
+# Train and evaluate the model
+train_and_evaluate_model(X_train, y_train, X_test, y_test)
+
